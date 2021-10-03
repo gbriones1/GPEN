@@ -484,20 +484,47 @@ class Generator(nn.Module):
         truncation_latent=None,
         input_is_latent=False,
         noise=None,
+        verbose=False,
     ):
         if not input_is_latent:
-            styles = [self.style(s) for s in styles]
+            # styles = [self.style(s) for s in styles]
+            if verbose:
+                print("Running mapping network")
+                print("Input shape of z for mapping network")
+                print(styles.shape)
+                print()
+            styles = [self.style(styles)]
+        else:
+            styles = [styles]
+        if verbose:
+            print("w shape")
+            print(styles[0].shape)
+            print()
 
         if noise is None:
             '''
             noise = [None] * (2 * (self.log_size - 2) + 1)
             '''
+            if verbose:
+                print("Generating random noise")
             noise = []
             batch = styles[0].shape[0]
-            for i in range(self.n_mlp + 1):
+            for i in range(self.n_mlp):
+            # for i in range(2*(self.log_size-1)-1):
                 size = 2 ** (i+2)
-                noise.append(torch.randn(batch, self.channels[size], size, size, device=styles[0].device))
-            
+                nf = (self.channels[size]/size)
+                n = torch.randn(batch, self.channels[size], size, size, device=styles[0].device)
+                # n = n*nf
+                # n = n+(nf*3)
+                noise.append(n)
+            noise = list(itertools.chain.from_iterable(itertools.repeat(x, 2) for x in noise))[1:]
+        
+        if verbose:
+            print("Noises shapes:")
+            for x in noise:
+                print(x.shape)
+            print()
+
         if truncation < 1:
             style_t = []
 
@@ -507,6 +534,9 @@ class Generator(nn.Module):
                 )
 
             styles = style_t
+
+        if verbose:
+            print(f"Unsqueezing input {self.n_latent} times")
 
         if len(styles) < 2:
             inject_index = self.n_latent
@@ -521,19 +551,37 @@ class Generator(nn.Module):
             latent2 = styles[1].unsqueeze(1).repeat(1, self.n_latent - inject_index, 1)
 
             latent = torch.cat([latent, latent2], 1)
+        
+        if verbose:
+            print("W latent shape")
+            print(latent.shape)
+            print()
 
         out = self.input(latent)
-        out = self.conv1(out, latent[:, 0], noise=noise[0])
 
+        if verbose:
+            print("Running deconvolutions")
+            print("Input shape for deconv:")
+            print(out.shape)
+        out = self.conv1(out, latent[:, 0], noise=noise[0])
         skip = self.to_rgb1(out, latent[:, 1])
+        if verbose:
+            print("Updating skip output to shape:")
+            print(skip.shape)
 
         i = 1
         for conv1, conv2, noise1, noise2, to_rgb in zip(
             self.convs[::2], self.convs[1::2], noise[1::2], noise[2::2], self.to_rgbs
         ):
+            if verbose:
+                print("Input shape for deconv:")
+                print(out.shape)
             out = conv1(out, latent[:, i], noise=noise1)
             out = conv2(out, latent[:, i + 1], noise=noise2)
             skip = to_rgb(out, latent[:, i + 2], skip)
+            if verbose:
+                print("Updating skip output to shape:")
+                print(skip.shape)
 
             i += 2
 
@@ -543,7 +591,8 @@ class Generator(nn.Module):
             return image, latent
 
         else:
-            return image, None
+            # return image, None
+            return image
 
 class ConvLayer(nn.Sequential):
     def __init__(
@@ -662,18 +711,44 @@ class FullGenerator(nn.Module):
         truncation=1,
         truncation_latent=None,
         input_is_latent=False,
+        verbose=False,
     ):
         noise = []
+        if verbose:
+            print("Running encoder")
         for i in range(self.log_size-1):
             ecd = getattr(self, self.names[i])
+            if verbose:
+                print("Input shape for ", self.names[i])
+                print(inputs.shape)
             inputs = ecd(inputs)
+            if verbose:
+                print("Adding this input to noise list")
             noise.append(inputs)
-            #print(inputs.shape)
+        if verbose:
+            print("Output shape of encoder:")
+            print(inputs.shape)
+            print()
         inputs = inputs.view(inputs.shape[0], -1)
+        if verbose:
+            print("Running flattening")
+            print("Input shape for final linear")
+            print(inputs.shape)
+            print()
         outs = self.final_linear(inputs)
-        #print(outs.shape)
+        if verbose:
+            print("Duplicating noise list")
         noise = list(itertools.chain.from_iterable(itertools.repeat(x, 2) for x in noise))[::-1]
-        outs = self.generator([outs], return_latents, inject_index, truncation, truncation_latent, input_is_latent, noise=noise[1:])
+        if verbose:
+            print("Running decoder")
+            print("Input shape for generator")
+            print(outs.shape)
+            print()
+            print("Noises shapes for generator")
+            for x in noise[1:]:
+                print(x.shape)
+            print()
+        outs = self.generator(outs, return_latents, inject_index, truncation, truncation_latent, input_is_latent, noise=noise[1:], verbose=verbose)
         return outs
 
 class Discriminator(nn.Module):
